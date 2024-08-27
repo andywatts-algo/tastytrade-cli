@@ -11,7 +11,7 @@ from typing import Optional
 
 import requests
 from rich import print as rich_print
-from tastytrade import Account, ProductionSession
+from tastytrade import Account, Session
 from tastytrade.order import NewOrder, PlacedOrderResponse
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,8 @@ def test_order_handle_errors(
     url = f'{session.base_url}/accounts/{account.account_number}/orders/dry-run'
     json = order.model_dump_json(exclude_none=True, by_alias=True)
 
-    response = requests.post(url, headers=session.headers, data=json)
+    # response = requests.post(url, headers=session.headers, data=json)
+    response = requests.post(url, headers=session.client.headers, data=json)
     # modified to use our error handling
     if response.status_code // 100 != 2:
         content = response.json()['error']
@@ -59,9 +60,9 @@ def test_order_handle_errors(
         return PlacedOrderResponse(**data)
 
 
-class RenewableSession(ProductionSession):
+class RenewableSession(Session):
     def __init__(self):
-        custom_path = os.path.join(os.path.expanduser('~'), CUSTOM_CONFIG_PATH)
+j        custom_path = os.path.join(os.path.expanduser('~'), CUSTOM_CONFIG_PATH)
         default_path = os.path.join(sys.prefix, DEFAULT_CONFIG_PATH)
         token_path = os.path.join(os.path.expanduser('~'), TOKEN_PATH)
 
@@ -86,7 +87,7 @@ class RenewableSession(ProductionSession):
         if not logged_in:
             # either the token expired or doesn't exist
             username, password = self._get_credentials()
-            ProductionSession.__init__(self, username, password)
+            Session.__init__(self, username, password)
 
             accounts = Account.get_accounts(self)
             self.accounts = [acc for acc in accounts if not acc.is_closed]
@@ -101,6 +102,7 @@ class RenewableSession(ProductionSession):
     def _get_credentials(self):
         username = os.getenv('TT_USERNAME')
         password = os.getenv('TT_PASSWORD')
+
         if self.config.has_section('general'):
             username = username or self.config['general'].get('username')
             password = password or self.config['general'].get('password')

@@ -633,6 +633,210 @@ async def strangle(symbol: str, quantity: int, call: Optional[Decimal] = None, w
             acc.place_order(sesh, order, dry_run=False)
 
 
+@option.command(help='Buy double calendar with the given parameters.')
+@click.option('-c', '--call', type=Decimal, help='The chosen strike for the call option.')
+@click.option('-p', '--put', type=Decimal, help='The chosen strike for the put option.')
+@click.option('-d', '--delta', type=int, help='The chosen delta for both options.')
+@click.option('--gtc', is_flag=True, help='Place a GTC order instead of a day order.')
+@click.option('--weeklies', is_flag=True, help='Show all expirations, not just monthlies.')
+@click.argument('symbol', type=str)
+@click.argument('quantity', type=int)
+async def double_calendar(symbol: str, quantity: int, call: Optional[Decimal] = None, width: Optional[int] = None,
+              gtc: bool = False, weeklies: bool = True, delta: Optional[int] = None, put: Optional[Decimal] = None):
+    if (call is not None or put is not None) and delta is not None:
+        print_error('Must specify either delta or strike, but not both.')
+        return
+    elif delta is not None and (call is not None or put is not None):
+        print_error('Please specify either delta, or strikes for both options.')
+        return
+    elif delta is not None and abs(delta) > 99:
+        print_error('Delta value is too high, -99 <= delta <= 99')
+        return
+
+    sesh = RenewableSession()
+
+    # Get the expiration chains
+    chain = NestedOptionChain.get_chain(sesh, symbol)
+    subchain_short = choose_expiration(chain, weeklies)
+    subchain_long = choose_expiration(chain, weeklies)
+    
+    tick_size = chain.tick_sizes[0].value
+    precision = tick_size.as_tuple().exponent
+    precision = abs(precision) if precision < 0 else ZERO
+    precision_str = f'.{precision}f'
+
+    async with DXLinkStreamer(sesh) as streamer:
+        if delta is not None:
+            put_dxf = [s.put_streamer_symbol for s in subchain_short.strikes]
+            call_dxf = [s.call_streamer_symbol for s in subchain_short.strikes]
+            dxfeeds = put_dxf + call_dxf
+            await streamer.subscribe(EventType.GREEKS, dxfeeds)
+            greeks_dict = await listen_greeks(len(dxfeeds), streamer)
+            put_greeks = [v for v in greeks_dict.values() if v.eventSymbol in put_dxf]
+            call_greeks = [v for v in greeks_dict.values() if v.eventSymbol in call_dxf]
+
+            lowest = 100
+            selected_put = None
+            for g in put_greeks:
+                diff = abs(g.delta * Decimal(100) + delta)
+                if diff < lowest:
+                    selected_put = g.eventSymbol
+                    lowest = diff
+            lowest = 100
+            selected_call = None
+            for g in call_greeks:
+                diff = abs(g.delta * Decimal(100) - delta)
+                if diff < lowest:
+                    selected_call = g.eventSymbol
+                    lowest = diff
+            # set strike with the closest delta
+            put_strike_short = next(s for s in subchain_short.strikes
+                          if s.put_streamer_symbol == selected_put)
+            call_strike_short = next(s for s in subchain_short.strikes
+                          if s.call_streamer_symbol == selected_call)
+        else:
+            put_strike_short = next(s for s in subchain_short.strikes if s.strike_price == put)
+            call_strike_short = next(s for s in subchain_short.strikes if s.strike_price == call)
+
+
+        # Find the same strikes for the long expiration
+        put_strike_long = next(s for s in subchain_long.strikes if s.strike_price == put_strike_short.strike_price)
+        call_strike_long = next(s for s in subchain_long.strikes if s.strike_price == call_strike_short.strike_price)
+
+        await streamer.subscribe(
+            EventType.QUOTE,
+            [
+                call_strike_short.call_streamer_symbol,
+                put_strike_short.put_streamer_symbol,
+                call_strike_long.put_streamer_symbol,
+                put_strike_long.call_streamer_symbol
+            ]
+        )
+        quote_dict = await listen_quotes(4, streamer)
+        bid = (quote_dict[call_strike_short.call_streamer_symbol].bidPrice +
+               quote_dict[put_strike_short.put_streamer_symbol].bidPrice)
+        ask = (quote_dict[call_strike_long.call_streamer_symbol].askPrice +
+               quote_dict[put_strike_long.put_streamer_symbol].askPrice)
+        mid = (bid + ask) / Decimal(2)
+        mid = round_to_width(mid, tick_size)
+
+        console = Console()
+        table = Table(show_header=True, header_style='bold', title_style='bold',
+                      title=f'Quote for {symbol} double calendar {subchain_short.expiration_date} / {subchain_long.expiration_date}')
+        table.add_column('Bid', style='green', justify='center')
+        table.add_column('Mid', justify='center')
+        table.add_column('Ask', style='red', justify='center')
+        table.add_row(f'{bid:{precision_str}}', f'{mid:{precision_str}}', f'{ask:{precision_str}}')
+        console.print(table)
+
+        price = input('Please enter a limit price per quantity (default mid): ')
+        price = mid if not price else Decimal(price)
+
+        tt_symbols_short = [put_strike_short.put, call_strike_short.call]
+        tt_symbols_long = [put_strike_long.put, call_strike_long.call]
+
+        options_short = Option.get_options(sesh, tt_symbols_short)
+        options_long = Option.get_options(sesh, tt_symbols_long)
+
+        legs = [
+            # Short strangle legs (sell to open)
+            options_short[0].build_leg(abs(quantity), OrderAction.SELL_TO_OPEN),
+            options_short[1].build_leg(abs(quantity), OrderAction.SELL_TO_OPEN),
+            # Long strangle legs (buy to open)
+            options_long[0].build_leg(abs(quantity), OrderAction.BUY_TO_OPEN),
+            options_long[1].build_leg(abs(quantity), OrderAction.BUY_TO_OPEN)
+        ]
+
+        order = NewOrder(
+            time_in_force=OrderTimeInForce.GTC if gtc else OrderTimeInForce.DAY,
+            order_type=OrderType.LIMIT,
+            legs=legs,
+            price=price,
+            price_effect=PriceEffect.DEBIT  # Debit order
+        )
+        acc = sesh.get_account()
+
+        data = test_order_handle_errors(acc, sesh, order)
+        if data is None:
+            return
+
+        nl = acc.get_balances(sesh).net_liquidating_value
+        bp = data.buying_power_effect.change_in_buying_power
+        percent = bp / nl * Decimal(100)
+        fees = data.fee_calculation.total_fees
+
+        table = Table(header_style='bold', title_style='bold', title='Order Review')
+        table.add_column('Quantity', justify='center')
+        table.add_column('Symbol', justify='center')
+        table.add_column('Strike', justify='center')
+        table.add_column('Type', justify='center')
+        table.add_column('Expiration', justify='center')
+        table.add_column('Price', justify='center')
+        table.add_column('BP', justify='center')
+        table.add_column('BP %', justify='center')
+        table.add_column('Fees', justify='center')
+        table.add_row(
+            f'{quantity:+}',
+            symbol,
+            f'${put_strike_short.strike_price:{precision_str}}',
+            'PUT (Short)',
+            f'{subchain_short.expiration_date}',
+            f'${price:.2f}',
+            f'${bp:.2f}',
+            f'{percent:.2f}%',
+            f'${fees:.2f}'
+        )
+        table.add_row(
+            f'{quantity:+}',
+            symbol,
+            f'${call_strike_short.strike_price:{precision_str}}',
+            'CALL (Short)',
+            f'{subchain_short.expiration_date}',
+            '-',
+            '-',
+            '-',
+            '-'
+        )
+        table.add_row(
+            f'{quantity:+}',
+            symbol,
+            f'${put_strike_long.strike_price:{precision_str}}',
+            'PUT (Long)',
+            f'{subchain_long.expiration_date}',
+            '-',
+            '-',
+            '-',
+            '-'
+        )
+        table.add_row(
+            f'{quantity:+}',
+            symbol,
+            f'${call_strike_long.strike_price:{precision_str}}',
+            'CALL (Long)',
+            f'{subchain_long.expiration_date}',
+            '-',
+            '-',
+            '-',
+            '-'
+        )
+        console.print(table)
+
+        if data.warnings:
+            for warning in data.warnings:
+                print_warning(warning.message)
+        warn_percent = sesh.config.getint('order', 'bp-warn-above-percent', fallback=None)
+        if warn_percent and percent > warn_percent:
+            print_warning(f'Buying power usage is above target of {warn_percent}%!')
+        if get_confirmation('Send order? Y/n '):
+            acc.place_order(sesh, order, dry_run=False)
+
+
+
+
+
+
+
+
 @option.command(help='Fetch and display an options chain.')
 @click.option('-w', '--weeklies', is_flag=True,
               help='Show all expirations, not just monthlies.')
