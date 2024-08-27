@@ -1,0 +1,32 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "tt option chain SPX",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/repos/tastyware/tastytrade-cli/ttcli/app.py",
+            "args": ["option", "chain", "SPX"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "tt strangle -d 30 SPX",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/repos/tastyware/tastytrade-cli/ttcli/app.py",
+            "args": ["option", "strangle", "-d", "30", "SPX", "-1"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "tt double_calendar -d 30 SPX",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/repos/tastyware/tastytrade-cli/ttcli/app.py",
+            "args": ["option", "double_calendar", "-d", "30", "SPX", "1"],
+            "console": "integratedTerminal"
+        }
+    ]
+}
