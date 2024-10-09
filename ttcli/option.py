@@ -137,10 +137,12 @@ async def option():
 @click.option('--gtc', is_flag=True, help='Place a GTC order instead of a day order.')
 @click.option('--weeklies', is_flag=True, help='Show all expirations, not just monthlies.')
 @click.option('--dte', type=int, help='Days to expiration for the option.')
+@click.option('--jfdi', is_flag=True, help='Just F***ing Do It: Use mid price and place the trade without confirmation.')
 @click.argument('symbol', type=str)
 @click.argument('quantity', type=int)
 async def call(symbol: str, quantity: int, strike: Optional[Decimal] = None, width: Optional[int] = None,
-               gtc: bool = False, weeklies: bool = False, delta: Optional[int] = None, dte: Optional[int] = None):
+               gtc: bool = False, weeklies: bool = False, delta: Optional[int] = None, dte: Optional[int] = None,
+               jfdi: bool = False):
     if strike is not None and delta is not None:
         print_error('Must specify either delta or strike, but not both.')
         return
@@ -218,8 +220,14 @@ async def call(symbol: str, quantity: int, strike: Optional[Decimal] = None, wid
         table.add_row(f'{bid:{precision_str}}', f'{mid:{precision_str}}', f'{ask:{precision_str}}')
         console.print(table)
 
-        price = input('Please enter a limit price per quantity (default mid): ')
-        price = mid if not price else Decimal(price)
+        if jfdi:
+            if quantity > 0:  # Long
+                price = round_to_width(mid, tick_size) - tick_size  # Round price down
+            elif quantity < 0:  # Short
+                price = round_to_width(mid, tick_size)  # Round price up 
+        else:
+            price_input = input(f'Please enter a limit price per quantity (default {mid:{precision_str}}): ')
+            price = Decimal(price_input) if price_input else mid
 
         short_symbol = next(s.call for s in subchain.strikes if s.strike_price == strike)
         if width:
@@ -279,7 +287,7 @@ async def call(symbol: str, quantity: int, strike: Optional[Decimal] = None, wid
         warn_percent = sesh.config.getint('order', 'bp-warn-above-percent', fallback=None)
         if warn_percent and percent > warn_percent:
             print_warning(f'Buying power usage is above target of {warn_percent}%!')
-        if get_confirmation('Send order? Y/n '):
+        if jfdi or get_confirmation('Send order? Y/n '):
             acc.place_order(sesh, order, dry_run=False)
 
 
@@ -290,10 +298,12 @@ async def call(symbol: str, quantity: int, strike: Optional[Decimal] = None, wid
 @click.option('--gtc', is_flag=True, help='Place a GTC order instead of a day order.')
 @click.option('--weeklies', is_flag=True, help='Show all expirations, not just monthlies.')
 @click.option('--dte', type=int, help='Days to expiration for the option.')
+@click.option('--jfdi', is_flag=True, help='Just F***ing Do It: Use mid price and place the trade without confirmation.')
 @click.argument('symbol', type=str)
 @click.argument('quantity', type=int)
 async def put(symbol: str, quantity: int, strike: Optional[int] = None, width: Optional[int] = None,
-              gtc: bool = False, weeklies: bool = False, delta: Optional[int] = None, dte: Optional[int] = None):
+              gtc: bool = False, weeklies: bool = False, delta: Optional[int] = None, dte: Optional[int] = None,
+              jfdi: bool = False):
     if strike is not None and delta is not None:
         print_error('Must specify either delta or strike, but not both.')
         return
@@ -371,8 +381,15 @@ async def put(symbol: str, quantity: int, strike: Optional[int] = None, width: O
         table.add_row(f'{bid:{precision_str}}', f'{mid:{precision_str}}', f'{ask:{precision_str}}')
         console.print(table)
 
-        price = input('Please enter a limit price per quantity (default mid): ')
-        price = mid if not price else Decimal(price)
+        if jfdi:
+            if quantity > 0:  # Long
+                price = round_to_width(mid, tick_size) - tick_size  # Round price down
+            elif quantity < 0:  # Short
+                price = round_to_width(mid, tick_size)  # Round price up 
+
+        else:
+            price_input = input(f'Please enter a limit price per quantity (default {mid:{precision_str}}): ')
+            price = Decimal(price_input) if price_input else mid
 
         short_symbol = next(s.put for s in subchain.strikes if s.strike_price == strike)
         if width:
@@ -432,7 +449,8 @@ async def put(symbol: str, quantity: int, strike: Optional[int] = None, width: O
         warn_percent = sesh.config.getint('order', 'bp-warn-above-percent', fallback=None)
         if warn_percent and percent > warn_percent:
             print_warning(f'Buying power usage is above target of {warn_percent}%!')
-        if get_confirmation('Send order? Y/n '):
+        
+        if jfdi or get_confirmation('Send order? Y/n '):
             acc.place_order(sesh, order, dry_run=False)
 
 
