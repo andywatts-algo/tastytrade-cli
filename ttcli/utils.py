@@ -111,7 +111,7 @@ class RenewableSession(Session):
         return username, password
 
     def get_account(self) -> Account:
-        account = self.config['general'].get('default-account', None)
+        account = os.getenv('TT_ACCOUNT') or self.config['general'].get('default-account')
         if account:
             try:
                 return next(a for a in self.accounts if a.account_number == account)
