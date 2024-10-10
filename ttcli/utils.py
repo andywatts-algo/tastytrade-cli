@@ -2,15 +2,19 @@ import getpass
 import logging
 import os
 import pickle
+from pipes import quote
 import shutil
 from configparser import ConfigParser
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from importlib.resources import as_file, files
-from typing import Optional
+from typing import Optional, List, Dict, Any
+
+import asyncio
+import aiohttp
 
 from rich import print as rich_print
-from tastytrade import Account, Session
+from tastytrade import Account, OrderAction, Session
 from tastytrade.order import NewOrder, PlacedOrderResponse
 
 logger = logging.getLogger(__name__)
@@ -147,4 +151,63 @@ def get_confirmation(prompt: str, default: bool = True) -> bool:
             return True
         if answer[0] == 'n':
             return False
+
+
+async def post_to_optionstrat(
+    symbol: str,
+    order: NewOrder,
+    name: str,
+    description: str,
+    price: Decimal
+) -> Dict[str, Any]:
+    """
+    JSON POST trade to optionstrat.com/api/strategy.
+
+    :param symbol: The underlying symbol for the trade
+    :param order: The NewOrder object containing the trade details
+    :param name: Name of the trade
+    :param description: Description of the trade
+    :param price: The price of the option or spread
+    :return: The response from the API as a dictionary
+    """
+    legs = []
+    for leg in order.legs:
+        legs.append({
+            "revision": 0,
+            "enabled": True,
+            "symbol": leg.instrument_type.symbol,
+            "basis": float(price),
+            "quantity": leg.quantity if leg.action in [OrderAction.BUY_TO_OPEN, OrderAction.BUY_TO_CLOSE] else -leg.quantity
+        })
+
+    url = "https://optionstrat.com/api/strategy"
+    
+    payload = {
+        "name": name,
+        "isCustomName": True,
+        "description": description,
+        "strategy": {
+            "isCashSecured": False,
+            "symbol": symbol,
+            "items": legs
+        }
+    }
+
+    # Cookie SID from environment variable
+    sid = os.getenv('OPTIONSTRAT_SID')
+    if not sid:
+        raise ValueError("OPTIONSTRAT_SID environment variable is not set")
+    expiration_time = datetime.utcnow() + timedelta(hours=24)
+    expiration_str = expiration_time.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    cookie = f"sid={quote(sid)}; Path=/; Expires={expiration_str};"
+    headers = { "Cookie": cookie }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                raise Exception(f"Failed to post to OptionStrat. Status: {response.status}, Response: {await response.text()}")
+
+
 

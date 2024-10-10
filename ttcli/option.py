@@ -17,7 +17,7 @@ from tastytrade.utils import get_tasty_monthly
 from datetime import datetime
 
 from ttcli.utils import (ZERO, RenewableSession, get_confirmation, is_monthly,
-                         print_error, print_warning, test_order_handle_errors)
+                         print_error, print_warning, test_order_handle_errors, post_to_optionstrat)
 
 
 def round_to_width(x, base=Decimal(1)):
@@ -282,6 +282,17 @@ async def call(symbol: str, quantity: int, strike: Optional[Decimal] = None, wid
         if get_confirmation('Send order? Y/n '):
             acc.place_order(sesh, order, dry_run=False)
 
+        if get_confirmation('Post trade to OptionStrat? Y/n '):
+            expiration_str = subchain.expiration_date.strftime("%b %d")
+            name = f"{symbol} {expiration_str} {strike} Call" + (f" {strike + width}" if width else "")
+            description = f"Call on {symbol} at strike {strike}" + (f" with width {width}" if width else "")
+
+            try:
+                result = await post_to_optionstrat(symbol, order, name, description, price)
+                print(f"Trade posted to OptionStrat: https://optionstrat.com/share/{result['code']}")
+            except Exception as e:
+                print_warning(f"Failed to post to OptionStrat: {e}")
+
 
 @option.command(help='Buy or sell puts with the given parameters.')
 @click.option('-s', '--strike', type=Decimal, help='The chosen strike for the option.')
@@ -434,6 +445,26 @@ async def put(symbol: str, quantity: int, strike: Optional[int] = None, width: O
             print_warning(f'Buying power usage is above target of {warn_percent}%!')
         if get_confirmation('Send order? Y/n '):
             acc.place_order(sesh, order, dry_run=False)
+
+        if get_confirmation('Post trade to OptionStrat? Y/n '):
+            expiration_str = subchain.expiration_date.strftime("%b %d")
+            name = f"{symbol} {expiration_str} {strike} Put"
+            if width:
+                name += f" {strike - width}"
+
+            description = f"Put on {symbol} at strike {strike}" + (f" with width {width}" if width else "")
+
+            try:
+                optionstrat_result = await post_to_optionstrat(
+                    symbol,
+                    order,
+                    name,
+                    description,
+                    price
+                )
+                print(f"Trade posted to OptionStrat successfully! URL: https://optionstrat.com/share/{optionstrat_result['code']}")
+            except Exception as e:
+                print_warning(f"Failed to post trade to OptionStrat: {e}")
 
 
 @option.command(help='Buy or sell strangles with the given parameters.')
@@ -653,6 +684,26 @@ async def strangle(symbol: str, quantity: int, call: Optional[Decimal] = None, w
             print_warning(f'Buying power usage is above target of {warn_percent}%!')
         if get_confirmation('Send order? Y/n '):
             acc.place_order(sesh, order, dry_run=False)
+
+        if get_confirmation('Post trade to OptionStrat? Y/n '):
+            expiration_str = subchain.expiration_date.strftime("%b %d")
+            name = f"{symbol} {expiration_str} {put_strike.strike_price}/{call_strike.strike_price} Strangle"
+            if width:
+                name += f" {put_spread_strike.strike_price}/{call_spread_strike.strike_price}"
+
+            description = f"Strangle on {symbol} with put at strike {put_strike.strike_price} and call at strike {call_strike.strike_price}" + (f" with width {width}" if width else "")
+
+            try:
+                optionstrat_result = await post_to_optionstrat(
+                    symbol,
+                    order,
+                    name,
+                    description,
+                    price
+                )
+                print(f"Trade posted to OptionStrat successfully! URL: https://optionstrat.com/share/{optionstrat_result['code']}")
+            except Exception as e:
+                print_warning(f"Failed to post trade to OptionStrat: {e}")
 
 
 @option.command(help='Fetch and display an options chain.')
